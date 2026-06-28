@@ -1,0 +1,1102 @@
+local function cleanup()
+    local names = {"WindUI","SsinHubGui","SpamCenter"}
+    for _,name in pairs(names) do
+        local old = game.CoreGui:FindFirstChild(name)
+        if old then old:Destroy() end
+    end
+end
+cleanup()
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local StatsService = game:GetService("Stats")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VIM = game:GetService("VirtualInputManager")
+
+local remote, f_raw = nil, nil
+local c = {nil,nil,nil,nil,nil,nil,nil}
+local AutoParry = false
+local AnimFix = false
+local ShowPeak = false
+local ManualSpamEnabled = false
+local TriggerBot = false
+local AutoSpam = false
+local CooldownProtect = false
+local Headless = false
+local LowRender = false
+local spamActive = false
+local triggerSpamActive = false
+local autoSpamActive = false
+local peakVel = 0
+getgenv().AbilityESP = false
+getgenv().AvatarInput = ""
+
+local lastSpamTime = 0
+local lastTrigSpamTime = 0
+local lastAutoSpamTime = 0
+local lastAbilityTime = 0
+local abilityCooldown = 0.8
+local spamInterval = 1/875
+local remoteHooked = false
+local parried_balls = {}
+local billboardLabels = {}
+
+local DISCORD_LINK = "https://discord.gg/pPpEe86Jk"
+
+local function isInGame()
+    return workspace:FindFirstChild("Alive") ~= nil
+end
+
+-- LOW RENDER
+local originalQuality = nil
+local function setLowRender(enabled)
+    if enabled then
+        pcall(function()
+            originalQuality = settings().Rendering.QualityLevel
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+        end)
+        pcall(function()
+            game:GetService("Lighting").GlobalShadows = false
+            game:GetService("Lighting").FogEnd = 9e9
+        end)
+    else
+        pcall(function()
+            if originalQuality then
+                settings().Rendering.QualityLevel = originalQuality
+            end
+        end)
+        pcall(function()
+            game:GetService("Lighting").GlobalShadows = true
+        end)
+    end
+end
+
+-- ANIMATION
+local SwordAPI = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("SwordAPI")
+local lastplayedd = 0
+local bypasscd = false
+local AnimationDelay = 1
+local AnimationCache = {}
+local Grab_Parry = nil
+
+local function GetCharacter() return LocalPlayer.Character end
+local function GetHumanoid()
+    local char = GetCharacter()
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+local function StopAnimation(track)
+    track:Stop(track:GetAttribute("StopFadeTime") or 0.1)
+end
+local function PlayGrabAnimation(track)
+    track:Play(track:GetAttribute("PlayFadeTime") or 0, track:GetAttribute("PlayWeight") or 1, track:GetAttribute("PlaySpeed") or 1)
+end
+local function GetParryAnimation()
+    local char = GetCharacter()
+    if not char then return nil end
+    local currentSword = char:GetAttribute("CurrentlyEquippedSword")
+    if not currentSword then return SwordAPI.Collection.Default:FindFirstChild("GrabParry") end
+    if AnimationCache[currentSword] then return AnimationCache[currentSword] end
+    local ok, swordData = pcall(function()
+        return ReplicatedStorage.Shared.ReplicatedInstances.Swords.GetSword:Invoke(currentSword)
+    end)
+    if not ok or type(swordData) ~= "table" then
+        AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+        return AnimationCache[currentSword]
+    end
+    for _, obj in pairs(SwordAPI.Collection:GetChildren()) do
+        if obj.Name == swordData.AnimationType then
+            local anim = obj:FindFirstChild("GrabParry") or obj:FindFirstChild("Grab")
+            if anim then AnimationCache[currentSword] = anim; return anim end
+        end
+    end
+    AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+    return AnimationCache[currentSword]
+end
+local function PlayParry_Animation()
+    local humanoid = GetHumanoid()
+    if not humanoid then return end
+    local animation = GetParryAnimation()
+    if not animation then return end
+    for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+        if track.Name == "GrabParry" or track.Name == "Grab" then
+            track.TimePosition = 0; StopAnimation(track)
+        elseif track.Name == "SuccessParry" or track.Name == "Success" then
+            StopAnimation(track)
+        end
+    end
+    Grab_Parry = humanoid.Animator:LoadAnimation(animation)
+    PlayGrabAnimation(Grab_Parry)
+end
+local function SpamParry_Animation()
+    if (os.clock() - lastplayedd) >= (AnimationDelay - 0.8) or bypasscd then
+        lastplayedd = os.clock()
+        bypasscd = false
+        PlayParry_Animation()
+    end
+end
+pcall(function()
+    ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+        bypasscd = true
+        local humanoid = GetHumanoid()
+        if humanoid then
+            for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+                if track.Name == "GrabParry" or track.Name == "Grab" then StopAnimation(track) end
+            end
+        end
+    end)
+end)
+
+-- HEADLESS
+local function applyHeadless(char, enabled)
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if head then
+        head.Transparency = enabled and 1 or 0
+        for _, v in pairs(head:GetChildren()) do
+            if v:IsA("Decal") or v:IsA("SpecialMesh") then
+                v.Transparency = enabled and 1 or 0
+            end
+        end
+    end
+    for _, acc in pairs(char:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local handle = acc:FindFirstChild("Handle")
+            if handle then
+                local isHead = handle:FindFirstChild("HatAttachment")
+                    or handle:FindFirstChild("HairAttachment")
+                    or handle:FindFirstChild("FaceFrontAttachment")
+                    or handle:FindFirstChild("FaceBackAttachment")
+                    or handle:FindFirstChild("NeckAttachment")
+                if isHead then
+                    handle.Transparency = enabled and 1 or 0
+                end
+            end
+        end
+    end
+end
+
+local function connectCharEvents(char)
+    local hum = char:WaitForChild("Humanoid", 10)
+    if not hum then return end
+    hum.Died:Connect(function()
+        spamActive = false
+        triggerSpamActive = false
+        autoSpamActive = false
+    end)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    if Headless then applyHeadless(char, true) end
+    if LowRender then setLowRender(true) end
+    task.spawn(function() connectCharEvents(char) end)
+end)
+if LocalPlayer.Character then
+    task.spawn(function() connectCharEvents(LocalPlayer.Character) end)
+end
+
+-- REMOTE HOOK
+local mt = getrawmetatable(game)
+local old = mt.__index
+setreadonly(mt, false)
+mt.__index = newcclosure(function(self, key)
+    if key == "FireServer" or key == "InvokeServer" then
+        return function(instance, ...)
+            local args = {...}
+            if #args >= 4 then
+                remoteHooked = true
+                remote = instance
+                f_raw = old(instance, "FireServer")
+                for i = 1, 7 do c[i] = args[i] end
+            end
+            return old(self, key)(instance, ...)
+        end
+    end
+    return old(self, key)
+end)
+setreadonly(mt, true)
+
+local function findBall()
+    local bc = workspace:FindFirstChild("Balls")
+    if bc then
+        local b = bc:GetChildren()[1]
+        if b and b:IsA("BasePart") then return b end
+    end
+    for _,v in ipairs(workspace:GetChildren()) do
+        if v:IsA("BasePart") and v.Name:lower():find("ball") then return v end
+    end
+    local folders = {"Lobby","Training","Practice","Map","Game"}
+    for _,fname in ipairs(folders) do
+        local folder = workspace:FindFirstChild(fname)
+        if folder then
+            for _,v in ipairs(folder:GetDescendants()) do
+                if v:IsA("BasePart") and v.Name:lower():find("ball") then return v end
+            end
+        end
+    end
+    return nil
+end
+
+local cachedEvents = {}
+local lastEventCache = 0
+local function fireParry()
+    if not(remote and f_raw) then return end
+    local cam = workspace.CurrentCamera
+    local char = LocalPlayer.Character
+    if not char then return end
+    local camCF = cam.CFrame
+    local now = tick()
+    if now - lastEventCache > 0.1 then
+        cachedEvents = {}
+        local alive = workspace:FindFirstChild("Alive")
+        if alive then
+            for _,v in ipairs(alive:GetChildren()) do
+                if v ~= char and v.PrimaryPart then
+                    local sp,vis = cam:WorldToScreenPoint(v.PrimaryPart.Position)
+                    if vis then cachedEvents[tostring(v)] = sp end
+                end
+            end
+        end
+        lastEventCache = now
+    end
+    local vp = cam.ViewportSize
+    c[3]=camCF.LookVector; c[4]=camCF
+    c[5]=cachedEvents; c[6]={vp.X/2,vp.Y/2}
+    pcall(function() f_raw(remote,unpack(c)) end)
+    if AnimFix then task.spawn(SpamParry_Animation) end
+end
+
+local cachedAbilityRemote = nil
+local lastAbilitySearch = 0
+local function fireAbility()
+    local now = tick()
+    if not cachedAbilityRemote or (now-lastAbilitySearch)>10 then
+        lastAbilitySearch = now
+        for _,v in ipairs(game:GetDescendants()) do
+            if v:IsA("RemoteEvent") then
+                local n = v.Name:lower()
+                if n:find("ability") or n:find("skill") then
+                    cachedAbilityRemote = v; break
+                end
+            end
+        end
+    end
+    if cachedAbilityRemote then
+        pcall(function() cachedAbilityRemote:FireServer() end)
+    else
+        pcall(function()
+            VIM:SendKeyEvent(true,Enum.KeyCode.Q,false,game)
+            task.delay(0.05,function()
+                VIM:SendKeyEvent(false,Enum.KeyCode.Q,false,game)
+            end)
+        end)
+    end
+end
+
+local function createBillboardGui(p)
+    task.spawn(function()
+        local character = p.Character
+        while not character or not character.Parent do
+            task.wait(); character = p.Character
+        end
+        local head = character:WaitForChild("Head",10)
+        if not head then return end
+        local bg = Instance.new("BillboardGui")
+        bg.Name="AbilityESP_Gui"; bg.Adornee=head
+        bg.Size=UDim2.new(0,220,0,60)
+        bg.StudsOffset=Vector3.new(0,3.5,0)
+        bg.AlwaysOnTop=true; bg.Parent=head
+        local tl = Instance.new("TextLabel")
+        tl.Size=UDim2.new(1,0,1,0)
+        tl.TextColor3=Color3.fromRGB(220,50,50)
+        tl.TextSize=16; tl.TextStrokeTransparency=0
+        tl.TextStrokeColor3=Color3.fromRGB(0,0,0)
+        tl.Font=Enum.Font.GothamBold
+        tl.BackgroundTransparency=1; tl.Parent=bg; tl.Visible=false
+        billboardLabels[p]=tl
+        local hum=character:FindFirstChild("Humanoid")
+        if hum then hum.DisplayDistanceType=Enum.HumanoidDisplayDistanceType.None end
+        local conn
+        conn=RunService.Heartbeat:Connect(function()
+            if not(character and character.Parent) then
+                conn:Disconnect()
+                pcall(function() bg:Destroy() end)
+                billboardLabels[p]=nil; return
+            end
+            tl.Visible=getgenv().AbilityESP
+            if getgenv().AbilityESP then
+                local ab=p:GetAttribute("EquippedAbility")
+                tl.Text=ab and(p.DisplayName.." ["..ab.."]") or p.DisplayName
+            end
+        end)
+    end)
+end
+for _,p in pairs(Players:GetPlayers()) do
+    if p~=LocalPlayer then
+        p.CharacterAdded:Connect(function() createBillboardGui(p) end)
+        if p.Character then createBillboardGui(p) end
+    end
+end
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function() createBillboardGui(p) end)
+end)
+
+local ACC  = Color3.fromRGB(220,50,50)
+local GREEN = Color3.fromRGB(50,220,80)
+local GRAY  = Color3.fromRGB(130,130,130)
+local WHITE = Color3.new(1,1,1)
+
+-- ===== MAIN SCREEN GUI =====
+local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+ScreenGui.Name = "SsinHubGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 999
+ScreenGui.IgnoreGuiInset = true
+
+local function makeDraggable(frame, handle)
+    handle = handle or frame
+    local dragging, dragInput, dragStart, startPos
+    handle.InputBegan:Connect(function(inp)
+        if inp.UserInputType==Enum.UserInputType.MouseButton1
+        or inp.UserInputType==Enum.UserInputType.Touch then
+            dragging=true; dragStart=inp.Position; startPos=frame.Position
+            inp.Changed:Connect(function()
+                if inp.UserInputState==Enum.UserInputState.End then dragging=false end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(inp)
+        if inp.UserInputType==Enum.UserInputType.MouseMovement
+        or inp.UserInputType==Enum.UserInputType.Touch then dragInput=inp end
+    end)
+    UserInputService.InputChanged:Connect(function(inp)
+        if inp==dragInput and dragging then
+            local d=inp.Position-dragStart
+            frame.Position=UDim2.new(
+                startPos.X.Scale, startPos.X.Offset+d.X,
+                startPos.Y.Scale, startPos.Y.Offset+d.Y)
+        end
+    end)
+end
+
+-- ===== FPS / PING PANEL =====
+local StatsFrame = Instance.new("Frame", ScreenGui)
+StatsFrame.Size = UDim2.new(0, 120, 0, 50)
+StatsFrame.Position = UDim2.new(1, -130, 0, 10)
+StatsFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+StatsFrame.BackgroundTransparency = 0.05
+StatsFrame.BorderSizePixel = 0
+Instance.new("UICorner", StatsFrame).CornerRadius = UDim.new(0, 10)
+local StatStroke = Instance.new("UIStroke", StatsFrame)
+StatStroke.Color = ACC; StatStroke.Thickness = 1.5
+
+local FpsLabel = Instance.new("TextLabel", StatsFrame)
+FpsLabel.Size = UDim2.new(1, -8, 0, 22)
+FpsLabel.Position = UDim2.new(0, 6, 0, 2)
+FpsLabel.BackgroundTransparency = 1
+FpsLabel.Text = "FPS: --"
+FpsLabel.Font = Enum.Font.GothamBold
+FpsLabel.TextSize = 12
+FpsLabel.TextColor3 = WHITE
+FpsLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local PingLabel = Instance.new("TextLabel", StatsFrame)
+PingLabel.Size = UDim2.new(1, -8, 0, 22)
+PingLabel.Position = UDim2.new(0, 6, 0, 26)
+PingLabel.BackgroundTransparency = 1
+PingLabel.Text = "Ping: --ms"
+PingLabel.Font = Enum.Font.GothamBold
+PingLabel.TextSize = 12
+PingLabel.TextColor3 = WHITE
+PingLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+makeDraggable(StatsFrame, StatsFrame)
+
+-- FPS counter
+local fpsCount = 0
+local fpsTimer = 0
+RunService.Heartbeat:Connect(function(dt)
+    fpsCount = fpsCount + 1
+    fpsTimer = fpsTimer + dt
+    if fpsTimer >= 1 then
+        FpsLabel.Text = "FPS: "..math.floor(fpsCount / fpsTimer)
+        fpsCount = 0; fpsTimer = 0
+        pcall(function()
+            local ping = math.floor(StatsService.Network.ServerStatsItem["Data Ping"]:GetValue())
+            PingLabel.Text = "Ping: "..ping.."ms"
+            -- Color ping
+            if ping < 80 then PingLabel.TextColor3 = GREEN
+            elseif ping < 150 then PingLabel.TextColor3 = Color3.fromRGB(255,200,0)
+            else PingLabel.TextColor3 = ACC end
+        end)
+    end
+end)
+
+-- Ball Stats Panel
+local PFrame=Instance.new("Frame",ScreenGui)
+PFrame.Size=UDim2.new(0,175,0,110)
+PFrame.Position=UDim2.new(0,20,0.5,-55)
+PFrame.BackgroundColor3=Color3.fromRGB(18,18,18)
+PFrame.BorderSizePixel=0; PFrame.Visible=false
+Instance.new("UICorner",PFrame).CornerRadius=UDim.new(0,10)
+Instance.new("UIStroke",PFrame).Color=ACC
+local PTitle2=Instance.new("TextLabel",PFrame)
+PTitle2.Size=UDim2.new(1,0,0,28); PTitle2.Text=" BALL STATS"
+PTitle2.TextColor3=ACC; PTitle2.BackgroundTransparency=1
+PTitle2.Font=Enum.Font.GothamBold; PTitle2.TextSize=13
+PTitle2.TextXAlignment=Enum.TextXAlignment.Left
+local VLog=Instance.new("TextLabel",PFrame)
+VLog.Position=UDim2.new(0.08,0,0.42,0); VLog.Size=UDim2.new(0.8,0,0,26)
+VLog.Text="0.0"; VLog.TextColor3=WHITE; VLog.BackgroundTransparency=1
+VLog.Font=Enum.Font.GothamBold; VLog.TextSize=24
+VLog.TextXAlignment=Enum.TextXAlignment.Left
+local VLabel=Instance.new("TextLabel",PFrame)
+VLabel.Position=UDim2.new(0.08,0,0.3,0); VLabel.Size=UDim2.new(0.8,0,0,14)
+VLabel.Text="Current"; VLabel.TextColor3=GRAY; VLabel.BackgroundTransparency=1
+VLabel.Font=Enum.Font.Gotham; VLabel.TextSize=10
+VLabel.TextXAlignment=Enum.TextXAlignment.Left
+local PLog=Instance.new("TextLabel",PFrame)
+PLog.Position=UDim2.new(0.08,0,0.8,0); PLog.Size=UDim2.new(0.8,0,0,18)
+PLog.Text="0.0"; PLog.TextColor3=GREEN; PLog.BackgroundTransparency=1
+PLog.Font=Enum.Font.GothamBold; PLog.TextSize=14
+PLog.TextXAlignment=Enum.TextXAlignment.Left
+local PLabel=Instance.new("TextLabel",PFrame)
+PLabel.Position=UDim2.new(0.08,0,0.7,0); PLabel.Size=UDim2.new(0.8,0,0,12)
+PLabel.Text="Peak"; PLabel.TextColor3=GRAY; PLabel.BackgroundTransparency=1
+PLabel.Font=Enum.Font.Gotham; PLabel.TextSize=10
+PLabel.TextXAlignment=Enum.TextXAlignment.Left
+makeDraggable(PFrame,PTitle2)
+
+-- Trigger Status
+local TrigFrame=Instance.new("Frame",ScreenGui)
+TrigFrame.Size=UDim2.new(0,155,0,46)
+TrigFrame.Position=UDim2.new(0.5,-77,0,14)
+TrigFrame.BackgroundColor3=Color3.fromRGB(18,18,18)
+TrigFrame.BorderSizePixel=0; TrigFrame.Visible=false
+Instance.new("UICorner",TrigFrame).CornerRadius=UDim.new(0,8)
+Instance.new("UIStroke",TrigFrame).Color=ACC
+local TrigLbl=Instance.new("TextLabel",TrigFrame)
+TrigLbl.Size=UDim2.new(0.58,0,1,0); TrigLbl.Position=UDim2.new(0.04,0,0,0)
+TrigLbl.Text="Trigger Bot"; TrigLbl.TextColor3=ACC
+TrigLbl.BackgroundTransparency=1; TrigLbl.Font=Enum.Font.GothamBold
+TrigLbl.TextSize=13; TrigLbl.TextXAlignment=Enum.TextXAlignment.Left
+local TrigStatus=Instance.new("TextLabel",TrigFrame)
+TrigStatus.Size=UDim2.new(0.38,0,1,0); TrigStatus.Position=UDim2.new(0.6,0,0,0)
+TrigStatus.Text="ON"; TrigStatus.TextColor3=GREEN
+TrigStatus.BackgroundTransparency=1; TrigStatus.Font=Enum.Font.GothamBold
+TrigStatus.TextSize=13
+makeDraggable(TrigFrame,TrigFrame)
+
+-- SPAM BUTTON
+local SpamGui=Instance.new("ScreenGui",game.CoreGui)
+SpamGui.Name="SpamCenter"
+SpamGui.Enabled=false
+SpamGui.DisplayOrder=998
+SpamGui.ResetOnSpawn=false
+SpamGui.IgnoreGuiInset=true
+
+local SpamOuter=Instance.new("Frame",SpamGui)
+SpamOuter.Size=UDim2.new(0,130,0,52)
+SpamOuter.Position=UDim2.new(1,-150,0.5,0)
+SpamOuter.BackgroundTransparency=1
+SpamOuter.BorderSizePixel=0
+
+local SpamBody=Instance.new("Frame",SpamOuter)
+SpamBody.Size=UDim2.new(1,0,1,0)
+SpamBody.BackgroundColor3=Color3.fromRGB(22,22,22)
+SpamBody.BackgroundTransparency=0.1
+SpamBody.BorderSizePixel=0
+Instance.new("UICorner",SpamBody).CornerRadius=UDim.new(1,0)
+
+local SpamBorder=Instance.new("UIStroke",SpamBody)
+SpamBorder.Color=ACC; SpamBorder.Thickness=2
+
+local SpamDot=Instance.new("Frame",SpamBody)
+SpamDot.Size=UDim2.new(0,14,0,14)
+SpamDot.Position=UDim2.new(0,12,0.5,-7)
+SpamDot.BackgroundColor3=Color3.fromRGB(80,80,80)
+SpamDot.BorderSizePixel=0
+Instance.new("UICorner",SpamDot).CornerRadius=UDim.new(1,0)
+
+local SpamLabel=Instance.new("TextLabel",SpamBody)
+SpamLabel.Size=UDim2.new(1,-34,1,0)
+SpamLabel.Position=UDim2.new(0,32,0,0)
+SpamLabel.BackgroundTransparency=1
+SpamLabel.Text="SPAM  OFF"
+SpamLabel.Font=Enum.Font.GothamBold
+SpamLabel.TextSize=15
+SpamLabel.TextColor3=Color3.fromRGB(180,180,180)
+SpamLabel.TextXAlignment=Enum.TextXAlignment.Left
+
+local SpamPulse=Instance.new("Frame",SpamBody)
+SpamPulse.Size=UDim2.new(0,14,0,14)
+SpamPulse.Position=UDim2.new(0,12,0.5,-7)
+SpamPulse.BackgroundTransparency=1
+SpamPulse.BorderSizePixel=0
+Instance.new("UICorner",SpamPulse).CornerRadius=UDim.new(1,0)
+local SpamPulseStroke=Instance.new("UIStroke",SpamPulse)
+SpamPulseStroke.Color=GREEN; SpamPulseStroke.Thickness=2
+SpamPulseStroke.Transparency=1
+
+local pulseRunning=false
+local function startPulse()
+    if pulseRunning then return end
+    pulseRunning=true
+    task.spawn(function()
+        while spamActive do
+            SpamPulse.Size=UDim2.new(0,14,0,14)
+            SpamPulse.Position=UDim2.new(0,12,0.5,-7)
+            SpamPulseStroke.Transparency=0.1
+            TweenService:Create(SpamPulse,TweenInfo.new(0.6,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+                {Size=UDim2.new(0,38,0,38),Position=UDim2.new(0,0,0.5,-19)}):Play()
+            TweenService:Create(SpamPulseStroke,TweenInfo.new(0.6),{Transparency=1}):Play()
+            task.wait(0.8)
+        end
+        pulseRunning=false
+    end)
+end
+
+local function setSpam(val)
+    spamActive=val
+    if val then
+        SpamDot.BackgroundColor3=GREEN
+        SpamLabel.Text="SPAM  ON"; SpamLabel.TextColor3=GREEN
+        SpamBorder.Color=GREEN
+        TweenService:Create(SpamBody,TweenInfo.new(0.2),{BackgroundColor3=Color3.fromRGB(10,35,10)}):Play()
+        startPulse()
+    else
+        SpamDot.BackgroundColor3=Color3.fromRGB(80,80,80)
+        SpamLabel.Text="SPAM  OFF"
+        SpamLabel.TextColor3=Color3.fromRGB(180,180,180)
+        SpamBorder.Color=ACC
+        SpamPulseStroke.Transparency=1
+        SpamPulse.Size=UDim2.new(0,14,0,14)
+        SpamPulse.Position=UDim2.new(0,12,0.5,-7)
+        TweenService:Create(SpamBody,TweenInfo.new(0.2),{BackgroundColor3=Color3.fromRGB(22,22,22)}):Play()
+    end
+end
+
+local DRAG_THRESHOLD=10
+local TAP_MAX_TIME=0.3
+local _drag=false; local _dragStart=nil
+local _posStart=nil; local _touchTime=0; local _moved=false
+
+local function isOnSpam(pos)
+    if not SpamGui.Enabled then return false end
+    local abs=SpamOuter.AbsolutePosition
+    local siz=SpamOuter.AbsoluteSize
+    return pos.X>=abs.X and pos.X<=abs.X+siz.X
+       and pos.Y>=abs.Y and pos.Y<=abs.Y+siz.Y
+end
+
+UserInputService.InputBegan:Connect(function(inp)
+    if inp.UserInputType~=Enum.UserInputType.MouseButton1
+    and inp.UserInputType~=Enum.UserInputType.Touch then return end
+    if not isOnSpam(inp.Position) then return end
+    if not isInGame() then return end
+    _drag=true; _moved=false
+    _dragStart=inp.Position; _posStart=SpamOuter.Position; _touchTime=tick()
+    TweenService:Create(SpamBody,TweenInfo.new(0.1),{BackgroundTransparency=0}):Play()
+end)
+UserInputService.InputChanged:Connect(function(inp)
+    if not _drag then return end
+    if inp.UserInputType~=Enum.UserInputType.MouseMovement
+    and inp.UserInputType~=Enum.UserInputType.Touch then return end
+    local d=inp.Position-_dragStart
+    if d.Magnitude>DRAG_THRESHOLD then
+        _moved=true
+        SpamOuter.Position=UDim2.new(
+            _posStart.X.Scale,_posStart.X.Offset+d.X,
+            _posStart.Y.Scale,_posStart.Y.Offset+d.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(inp)
+    if not _drag then return end
+    if inp.UserInputType~=Enum.UserInputType.MouseButton1
+    and inp.UserInputType~=Enum.UserInputType.Touch then return end
+    TweenService:Create(SpamBody,TweenInfo.new(0.1),{BackgroundTransparency=0.1}):Play()
+    if not _moved and tick()-_touchTime<TAP_MAX_TIME then
+        setSpam(not spamActive)
+    end
+    _drag=false; _moved=false; _dragStart=nil
+end)
+
+UserInputService.InputBegan:Connect(function(inp,gp)
+    if gp then return end
+    if inp.KeyCode==Enum.KeyCode.E then
+        if not ManualSpamEnabled then return end
+        if not isInGame() then return end
+        setSpam(not spamActive)
+    end
+end)
+
+-- WIND UI
+local WindUI=loadstring(game:HttpGet(
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+))()
+
+local Window=WindUI:CreateWindow({
+    Title="Ssinfonny Hub X",
+    Author="By Ssinfonnyx",
+    Icon="rbxassetid://132695262333067",
+    Folder="SsinfonnhubX",
+    Size=UDim2.fromOffset(480,360),
+    Transparent=false,
+    Theme="Dark",
+})
+pcall(function()
+    Window:EditTheme({
+        Accent=Color3.fromRGB(220,40,40),
+        Outline=Color3.fromRGB(220,40,40),
+        Text=Color3.fromRGB(255,255,255),
+        Background=Color3.fromRGB(15,15,15),
+    })
+end)
+
+task.spawn(function()
+    task.wait(0.5)
+    pcall(function()
+        for _,obj in ipairs(game.CoreGui:GetDescendants()) do
+            if obj:IsA("TextLabel") and obj.Text:find("Ssinfonny") then
+                obj.RichText=true
+                obj.Text='Ssinfonny Hub X  <font color="#DC1414"><b>v2.1</b></font>'
+                break
+            end
+        end
+    end)
+end)
+
+local uiVisible=true
+UserInputService.InputBegan:Connect(function(inp,gp)
+    if gp then return end
+    if inp.KeyCode==Enum.KeyCode.LeftControl
+    or inp.KeyCode==Enum.KeyCode.RightControl then
+        uiVisible=not uiVisible
+        pcall(function()
+            if not uiVisible then Window:Close() else Window:Open() end
+        end)
+    end
+end)
+
+local function N(t,m)
+    pcall(function() WindUI:Notify({Title=t,Content=m,Duration=3}) end)
+end
+
+local MainTab    =Window:Tab({Title="Main",    Icon="home"})
+local BlatantTab =Window:Tab({Title="Blatant", Icon="zap"})
+local VisualsTab =Window:Tab({Title="Visuals", Icon="eye"})
+local SettingsTab=Window:Tab({Title="Settings",Icon="settings"})
+
+-- MAIN
+MainTab:Toggle({
+    Title="Auto Parry",
+    Description="Automatically blocks the ball — fast + anti-curve",
+    Default=false,
+    Callback=function(v)
+        AutoParry=v; table.clear(parried_balls)
+        N("Auto Parry",v and "ON" or "OFF")
+    end,
+})
+MainTab:Toggle({
+    Title="Animation Fix",
+    Description="Plays real sword parry animation on each block",
+    Default=false,
+    Callback=function(v) AnimFix=v; N("Animation Fix",v and "ON" or "OFF") end,
+})
+MainTab:Toggle({
+    Title="Auto Spam",
+    Description="Spams when ball enters danger range — stops on death",
+    Default=false,
+    Callback=function(v)
+        AutoSpam=v
+        if not v then autoSpamActive=false end
+        N("Auto Spam",v and "ON" or "OFF")
+    end,
+})
+MainTab:Toggle({
+    Title="Cooldown Protection",
+    Description="Fires ability when parry is on cooldown",
+    Default=false,
+    Callback=function(v) CooldownProtect=v; N("Cooldown Protection",v and "ON" or "OFF") end,
+})
+MainTab:Button({
+    Title="Remote Status",
+    Description="Check if the parry remote is hooked",
+    Callback=function()
+        N("Remote",remoteHooked and "Hooked ✓" or "Not hooked — block the ball first!")
+    end,
+})
+task.spawn(function()
+    while not remoteHooked do task.wait(0.1) end
+    N("Ssinfonny Hub X","Remote hooked ✓")
+end)
+
+-- BLATANT
+BlatantTab:Toggle({
+    Title="Manual Spam Button",
+    Description="Pill-shaped spam button — tap/E=toggle, drag=move",
+    Default=false,
+    Callback=function(v)
+        ManualSpamEnabled=v; SpamGui.Enabled=v
+        if not v then setSpam(false) end
+        N("Manual Spam",v and "ON" or "OFF")
+    end,
+})
+BlatantTab:Toggle({
+    Title="Trigger Bot",
+    Description="Auto spams when the ball approaches",
+    Default=false,
+    Callback=function(v)
+        TriggerBot=v; TrigFrame.Visible=v
+        TrigStatus.Text="ON"; TrigStatus.TextColor3=GREEN
+        if not v then triggerSpamActive=false end
+        N("Trigger Bot",v and "ON" or "OFF")
+    end,
+})
+BlatantTab:Slider({
+    Title="Spam Speed",
+    Description="Spam fire rate",
+    Min=1,Max=20,Default=10,
+    Callback=function(v) spamInterval=1/(v*87) end,
+})
+
+-- VISUALS
+VisualsTab:Toggle({
+    Title="FPS / Ping Panel",
+    Description="Top-right floating panel — drag to move",
+    Default=true,
+    Callback=function(v)
+        StatsFrame.Visible=v
+    end,
+})
+VisualsTab:Toggle({
+    Title="Low Render Mode",
+    Description="Sets graphics to minimum — reduces lag",
+    Default=false,
+    Callback=function(v)
+        LowRender=v; setLowRender(v)
+        N("Low Render",v and "ON" or "OFF")
+    end,
+})
+VisualsTab:Toggle({
+    Title="Headless",
+    Description="Hides your head — persists on respawn",
+    Default=false,
+    Callback=function(v)
+        Headless=v
+        applyHeadless(LocalPlayer.Character,v)
+        N("Headless",v and "ON" or "OFF")
+    end,
+})
+VisualsTab:Toggle({
+    Title="Ball Stats",
+    Description="Shows ball speed in a floating panel",
+    Default=false,
+    Callback=function(v)
+        ShowPeak=v; PFrame.Visible=v
+        if not v then peakVel=0; VLog.Text="0.0"; PLog.Text="0.0" end
+    end,
+})
+VisualsTab:Toggle({
+    Title="Ability ESP",
+    Description="Shows player abilities in red above heads",
+    Default=false,
+    Callback=function(v)
+        getgenv().AbilityESP=v
+        for _,l in pairs(billboardLabels) do if l then l.Visible=v end end
+        N("Ability ESP",v and "ON" or "OFF")
+    end,
+})
+VisualsTab:Input({
+    Title="Avatar Input",
+    Description="Enter a username OR an asset ID",
+    Default="",Placeholder="Username or Asset ID...",
+    Callback=function(v) getgenv().AvatarInput=v end,
+})
+VisualsTab:Button({
+    Title="Copy Avatar",
+    Description="Copies another player's avatar by username",
+    Callback=function()
+        local u=tostring(getgenv().AvatarInput or ""):gsub("%s","")
+        if u=="" then N("Avatar","Enter a username!"); return end
+        N("Avatar","Searching: @"..u)
+        task.spawn(function()
+            local ok1,uid=pcall(function() return Players:GetUserIdFromNameAsync(u) end)
+            if not ok1 or not uid then N("Avatar","Player not found!"); return end
+            local ok2,desc=pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
+            if not ok2 or not desc then N("Avatar","Failed to get avatar!"); return end
+            local char=LocalPlayer.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                pcall(function() hum:ApplyDescription(desc) end)
+                N("Avatar","Copied: @"..u)
+                if Headless then task.wait(0.3); applyHeadless(char,true) end
+            end
+        end)
+    end,
+})
+VisualsTab:Button({
+    Title="Apply Shirt",
+    Description="Enter shirt asset ID in the input above",
+    Callback=function()
+        local id=tostring(getgenv().AvatarInput or ""):match("%d+")
+        if not id then N("Avatar","Enter an asset ID!"); return end
+        local char=LocalPlayer.Character; if not char then return end
+        local s=char:FindFirstChildOfClass("Shirt"); if s then s:Destroy() end
+        local shirt=Instance.new("Shirt")
+        shirt.ShirtTemplate="rbxassetid://"..id
+        shirt.Parent=char; N("Avatar","Shirt applied: "..id)
+    end,
+})
+VisualsTab:Button({
+    Title="Apply Pants",
+    Description="Enter pants asset ID in the input above",
+    Callback=function()
+        local id=tostring(getgenv().AvatarInput or ""):match("%d+")
+        if not id then N("Avatar","Enter an asset ID!"); return end
+        local char=LocalPlayer.Character; if not char then return end
+        local p=char:FindFirstChildOfClass("Pants"); if p then p:Destroy() end
+        local pants=Instance.new("Pants")
+        pants.PantsTemplate="rbxassetid://"..id
+        pants.Parent=char; N("Avatar","Pants applied: "..id)
+    end,
+})
+VisualsTab:Button({
+    Title="Reset Avatar",
+    Description="Reverts to your original Roblox avatar",
+    Callback=function()
+        task.spawn(function()
+            local char=LocalPlayer.Character; if not char then return end
+            local ok,desc=pcall(function()
+                return Players:GetHumanoidDescriptionFromUserId(LocalPlayer.UserId)
+            end)
+            if ok and desc then
+                local hum=char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    pcall(function() hum:ApplyDescription(desc) end)
+                    N("Avatar","Avatar reset!")
+                    if Headless then task.wait(0.3); applyHeadless(char,true) end
+                end
+            else N("Avatar","Reset failed!") end
+        end)
+    end,
+})
+
+-- SETTINGS
+SettingsTab:Button({
+    Title="Ssinfonny Hub X  |  v2.1",
+    Description="By Ssinfonnyx — Blade Ball Script",
+    Callback=function() N("Info","v2.1 | By Ssinfonnyx") end,
+})
+SettingsTab:Button({
+    Title="Discord Server",
+    Description="discord.gg/pPpEe86Jk — Click to copy",
+    Callback=function()
+        pcall(function() setclipboard(DISCORD_LINK) end)
+        N("Discord","Copied! discord.gg/pPpEe86Jk")
+    end,
+})
+SettingsTab:Button({
+    Title="About Auto Parry",
+    Description="Fast + anti-curve: distance threshold based",
+    Callback=function() N("Auto Parry","Fires early based on distance + speed. Block once to hook.") end,
+})
+SettingsTab:Button({
+    Title="About Auto Spam",
+    Description="Activates when ball enters danger threshold",
+    Callback=function() N("Auto Spam","Starts when ball is close enough. Stops on death.") end,
+})
+SettingsTab:Button({
+    Title="About Manual Spam",
+    Description="Tap or E = toggle | Drag = move",
+    Callback=function() N("Manual Spam","Tap / E → toggle. Drag → reposition.") end,
+})
+SettingsTab:Button({
+    Title="About Avatar",
+    Description="Username = copy avatar | Asset ID = shirt/pants",
+    Callback=function() N("Avatar","Username → Copy. Asset ID → Shirt/Pants. Local only.") end,
+})
+
+-- HEARTBEAT
+local lastBallCheck=0
+local cachedBall=nil
+local lastHrpCache=0
+local cachedHrp=nil
+local frameCount=0
+
+RunService.Heartbeat:Connect(function()
+    local now=tick()
+    frameCount=frameCount+1
+
+    if now-lastHrpCache>0.15 then
+        local ch=LocalPlayer.Character
+        cachedHrp=ch and ch:FindFirstChild("HumanoidRootPart")
+        lastHrpCache=now
+    end
+    local hrp=cachedHrp
+    if not hrp then return end
+
+    if now-lastBallCheck>0.08 then
+        cachedBall=findBall()
+        lastBallCheck=now
+    end
+
+    local ball=cachedBall
+    local ballValid=ball and ball:IsA("BasePart")
+    local inGame=isInGame()
+
+    if not inGame and spamActive then setSpam(false) end
+    if not inGame then
+        autoSpamActive=false
+        triggerSpamActive=false
+    end
+
+    if ballValid then
+
+        if ShowPeak and frameCount%3==0 then
+            local vel=ball.Velocity.Magnitude
+            VLog.Text=string.format("%.1f",vel)
+            if vel>peakVel then
+                peakVel=vel
+                PLog.Text=string.format("%.1f",peakVel)
+            end
+        end
+
+        local Ping=0.08
+        pcall(function()
+            Ping=StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()/1000
+        end)
+
+        local dist=(hrp.Position-ball.Position).Magnitude
+        local ballVel=ball.Velocity
+        local speed=ballVel.Magnitude
+
+        local target=ball:GetAttribute("target")
+            or ball:GetAttribute("Target")
+            or ball:GetAttribute("targetPlayer")
+            or ball:GetAttribute("TargetPlayer")
+        local isMyBall=(target==LocalPlayer.Name)
+            or (target==LocalPlayer.UserId)
+            or (target==tostring(LocalPlayer.UserId))
+
+        -- ===== AUTO PARRY =====
+        -- Fast + anti-curve: distance + speed threshold, no dot product required
+        -- This fires earlier so curved shots are caught too
+        if AutoParry and remote and f_raw and isMyBall then
+            local bID=ball:GetDebugId()
+            if not parried_balls[bID] then
+                local shouldParry=false
+                local Zoomies=ball:FindFirstChild("zoomies")
+                if Zoomies then
+                    local vel=Zoomies.VectorVelocity
+                    -- Threshold: how far away to parry based on speed + ping
+                    -- Raised multiplier for faster response (0.43 → 0.7)
+                    local threshold=speed*(Ping+0.016)*8*0.53
+                    if dist<=threshold or dist<=10 then
+                        shouldParry=true
+                    end
+                else
+                    -- No zoomies: simple distance check, slightly generous
+                    if dist<=16 then
+                        shouldParry=true
+                    end
+                end
+                if shouldParry then
+                    fireParry()
+                    parried_balls[bID]=true
+                    task.spawn(function()
+                        ball:GetAttributeChangedSignal("target"):Wait()
+                        parried_balls[bID]=nil
+                    end)
+                end
+            end
+        end
+
+        -- AUTO SPAM
+        if AutoSpam and remote and f_raw and inGame then
+            if isMyBall then
+                local threshold=20
+                local Zoomies=ball:FindFirstChild("zoomies")
+                if Zoomies then
+                    threshold=Zoomies.VectorVelocity.Magnitude*(Ping+0.016)*8*1.2
+                end
+                if dist<=threshold then
+                    autoSpamActive=true
+                elseif dist>threshold+5 then
+                    autoSpamActive=false
+                end
+            else
+                autoSpamActive=false
+            end
+        else
+            if not AutoSpam then autoSpamActive=false end
+        end
+
+        -- COOLDOWN PROTECT
+        if CooldownProtect and isMyBall then
+            if dist<=25 and now-lastAbilityTime>=abilityCooldown then
+                lastAbilityTime=now; task.spawn(fireAbility)
+            end
+        end
+
+        -- TRIGGER BOT
+        if TriggerBot and inGame then
+            local coming=speed>1 and ballVel.Unit:Dot((hrp.Position-ball.Position).Unit)>0.3
+            if coming and dist<=35 then
+                if not triggerSpamActive then
+                    triggerSpamActive=true
+                    TrigStatus.Text="FIRING"; TrigStatus.TextColor3=Color3.fromRGB(255,80,80)
+                end
+            elseif triggerSpamActive then
+                triggerSpamActive=false
+                TrigStatus.Text="ON"; TrigStatus.TextColor3=GREEN
+            end
+        end
+
+    else
+        if ShowPeak and frameCount%3==0 then VLog.Text="0.0" end
+        if triggerSpamActive then
+            triggerSpamActive=false
+            TrigStatus.Text="ON"; TrigStatus.TextColor3=GREEN
+        end
+        autoSpamActive=false
+    end
+
+    -- SPAM FIRES
+    if TriggerBot and triggerSpamActive and remote and f_raw and inGame then
+        if now-lastTrigSpamTime>=spamInterval then
+            lastTrigSpamTime=now; fireParry()
+        end
+    end
+
+    if ManualSpamEnabled and spamActive and remote and f_raw and inGame then
+        if now-lastSpamTime>=spamInterval then
+            lastSpamTime=now; fireParry()
+        end
+    end
+
+    if AutoSpam and autoSpamActive and remote and f_raw and inGame then
+        if now-lastAutoSpamTime>=spamInterval then
+            lastAutoSpamTime=now; fireParry()
+        end
+    end
+end)
+
+task.spawn(function()
+    task.wait(1)
+    pcall(function() setclipboard(DISCORD_LINK) end)
+    WindUI:Notify({
+        Title="Ssinfonny Hub X",
+        Content="Loaded ✓  |  Ctrl = Toggle UI",
+        Duration=3,
+    })
+    task.wait(0.5)
+    WindUI:Notify({
+        Title="Discord 🔗",
+        Content="discord.gg/pPpEe86Jk — Copied!",
+        Duration=4,
+    })
+end)
