@@ -1,0 +1,82 @@
+-- ==========================================
+-- Sistema de Login com Key
+-- ==========================================
+
+-- Proteção básica de serviços
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+-- 1. Criação dos Elementos da UI
+local ScreenGui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local Title = Instance.new("TextLabel")
+local KeyInput = Instance.new("TextBox")
+local SubmitBtn = Instance.new("TextButton")
+
+-- Arredondamento de bordas para design
+local UICorner1 = Instance.new("UICorner")
+local UICorner2 = Instance.new("UICorner")
+local UICorner3 = Instance.new("UICorner")
+
+-- 2. Configuração das Propriedades da UI
+ScreenGui.Name = "KeySystemUI"
+-- Usando CoreGui para que a UI não apareça no PlayerGui (evita detecção básica e limpezas no respawn)
+ScreenGui.Parent = (cloneref and cloneref(CoreGui)) or CoreGui 
+
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -75)
+MainFrame.Size = UDim2.new(0, 300, 0, 150)
+MainFrame.Active = true
+MainFrame.Draggable = true -- Permite arrastar a janela pela tela
+UICorner1.Parent = MainFrame
+
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "Autenticação Necessária"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 18
+
+KeyInput.Parent = MainFrame
+KeyInput.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+KeyInput.Position = UDim2.new(0.1, 0, 0.4, 0)
+KeyInput.Size = UDim2.new(0.8, 0, 0, 35)
+KeyInput.Font = Enum.Font.Gotham
+KeyInput.PlaceholderText = "Insira sua Key (Ex: KF-XXXX...)"
+KeyInput.Text = ""
+KeyInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+KeyInput.TextSize = 14
+UICorner2.Parent = KeyInput
+
+SubmitBtn.Parent = MainFrame
+SubmitBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+SubmitBtn.Position = UDim2.new(0.25, 0, 0.7, 0)
+SubmitBtn.Size = UDim2.new(0.5, 0, 0, 35)
+SubmitBtn.Font = Enum.Font.GothamBold
+SubmitBtn.Text = "Executar Script"
+SubmitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+SubmitBtn.TextSize = 14
+UICorner3.Parent = SubmitBtn
+
+-- 3. Lógica de Validação e Execução
+SubmitBtn.MouseButton1Click:Connect(function()
+    local key = KeyInput.Text
+    
+    -- Verifica se o usuário não deixou o campo vazio
+    if key ~= "" and key ~= " " then
+        -- Oculta e destrói a interface de login
+        ScreenGui:Destroy()
+        
+        -- Executa o seu script de segurança enviando a Key que foi digitada
+        local success, err = pcall(function()
+            (loadstring or load)(game:HttpGet("https://www.keyforge.win/v1/load/cmqygdgws000204jyvwpi6a42?e=1&script=cmqygl8wo000204l5c7vdhojf&key=" .. HttpService:UrlEncode(key) .. "&_cb=" .. tostring(os.clock()) .. "-" .. tostring(math.random(0, 2147483647)), true))()
+        end)
+        
+        -- Feedback no console caso o script falhe ou a API retorne erro
+        if not success then
+            warn("[Sistema]: Erro ao tentar carregar o script principal. Verifique a Key ou sua conexão.\nDetalhe do erro: " .. tostring(err))
+        end
+    end
+end)
